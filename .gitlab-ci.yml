@@ -1,0 +1,106 @@
+stages:
+  - CheckPhpcs
+  - CheckHashKey
+  - Test
+  - Deploy
+
+.PhpcsScan: &PhpcsScan |
+  pushComment(){
+      curl --request POST --header "PRIVATE-TOKEN: $USER_TOKEN" \
+      --form "note=$OUTPUT" --form "path=phpscan.md" \
+      --form "line=1" --form "line_type=new" \
+      https://git.hblab.vn/api/v4/projects/$CI_PROJECT_ID/repository/commits/$CI_COMMIT_SHA/comments
+      echo $OUTPUT
+      exit 1
+  }
+
+  OUTPUT=$(phpcs --standard=PSR2 app/) || pushComment
+
+
+CheckHashKey:
+  stage: CheckHashKey
+  image: node:14.18.1
+  script:
+    - (($(find ./app/ -type f -name "*.blade.php" -o -name "*.php" -not -exec grep -L "$(cat .hashkey)" {} + | wc -l) == 0 ))
+
+
+Phpcs:
+  stage: CheckPhpcs
+  image: php:8.1.1-alpine
+  script:
+    - curl -OL https://squizlabs.github.io/PHP_CodeSniffer/phpcs.phar
+    - curl -OL https://squizlabs.github.io/PHP_CodeSniffer/phpcbf.phar
+    - mv phpcs.phar /usr/local/bin/phpcs && chmod +x /usr/local/bin/phpcs
+    - mv phpcbf.phar /usr/local/bin/phpcbf && chmod +x /usr/local/bin/phpcbf
+    - *PhpcsScan
+
+Test:
+  stage: Test
+  needs: []  # Run independently from other stages
+  image: php:8.4
+  services:
+    - mysql:8.0
+  variables:
+    MYSQL_DATABASE: testing
+    MYSQL_ROOT_PASSWORD: secret
+    DB_HOST: mysql
+    DB_DATABASE: testing
+    DB_USERNAME: root
+    DB_PASSWORD: secret
+  before_script:
+    - apt-get update && apt-get install -y libzip-dev libpng-dev zip git
+    - docker-php-ext-install zip gd bcmath pdo_mysql
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    - composer install --no-interaction --prefer-dist
+    - cp .env.example .env
+    - php artisan key:generate
+    - php artisan jwt:secret --force
+    - php artisan migrate --force
+  script:
+    - php artisan test
+
+Deploy:
+  stage: Deploy
+  image: php:8.4
+  needs:
+    - Phpcs
+    - CheckHashKey
+    - Test
+  rules:
+    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH == 'main'
+  environment:
+    name: main
+  script:
+    - echo "👉 Installing dependencies..."
+    - apt-get update && apt-get install -y libzip-dev libpng-dev zip wget rsync openssh-client
+    - docker-php-ext-install zip gd bcmath pdo_mysql
+    - wget -O /usr/local/bin/composer https://getcomposer.org/download/latest-stable/composer.phar
+    - chmod +x /usr/local/bin/composer
+    - composer install && composer dump-autoload
+
+    - echo "👉 Debugging Variables..."
+    - echo "DEPLOY_USER=$DEPLOY_USER"
+    - echo "DEPLOY_HOST=$DEPLOY_HOST"
+    - echo "DEPLOY_DIR=$DEPLOY_DIR"
+
+    - echo "👉 Setting up SSH..."
+    - mkdir -p /root/.ssh
+    - echo "$DEPLOY_SSH_KEY" > /root/.ssh/id_rsa
+    - chmod 600 /root/.ssh/id_rsa
+    - touch /root/.ssh/known_hosts
+    - ssh-keyscan -H $DEPLOY_HOST >> /root/.ssh/known_hosts
+    - 'echo -e "Host *\n\tStrictHostKeyChecking no\n\tControlMaster auto\n\tControlPath /tmp/ansible-%r@%h:%p\n\tControlPersist 15m\n\tPreferredAuthentications publickey \n\n" > ~/.ssh/config'
+    - chmod 600 /root/.ssh/config
+
+    - echo "👉 Setting up environment..."
+    - echo "$DEPLOY_ENV_FILE" > .env
+    - echo "OK" > public/health.html
+
+    - echo "👉 Verifying HOME directory..."
+    - echo "HOME directory $HOME"
+    - ls -la $HOME
+
+    - echo "👉 Deploying using rsync and migrating..."
+    - rsync -azPq --exclude='.git' --exclude='node_modules' ./ $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/
+    - ssh $DEPLOY_USER@$DEPLOY_HOST "source ~/.bashrc && cd $DEPLOY_DIR"
+#    - ssh $DEPLOY_USER@$DEPLOY_HOST "source ~/.bashrc && cd $DEPLOY_DIR && php artisan migrate && eb deploy $DEV_EB_ENV_NAME -l $CI_COMMIT_REF_NAME-$CI_COMMIT_SHORT_SHA --timeout 30"

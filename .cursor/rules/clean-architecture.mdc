@@ -1,0 +1,258 @@
+---
+description: Laravel Clean Architecture rules for this project
+globs: ["app/**/*.php", "tests/**/*.php"]
+alwaysApply: true
+---
+
+# Laravel Clean Architecture - Cursor Rules
+
+## 🏗️ Project Structure
+
+This project follows **Strict Clean Architecture** pattern.
+
+```
+app/
+├── Domain/              # Pure PHP - NO framework dependencies
+├── Application/         # Use Cases, DTOs - NO framework dependencies  
+├── Infrastructure/      # Laravel implementations
+├── Http/               # Presentation layer (Controllers, Requests, Resources)
+├── Shared/             # Common code (Constants, Enums, Helpers)
+└── Console/            # CLI Commands
+```
+
+## 📋 Layer Rules
+
+### Domain Layer (`app/Domain/`)
+- ❌ NEVER use Laravel/Illuminate classes
+- ❌ NEVER use `config()`, `env()`, `__()` functions
+- ✅ Use only PHP core classes (DateTimeImmutable, Exception, etc.)
+- ✅ Use interfaces from `App\Shared\Constants\`
+- Contains: Entities, ValueObjects, Repository Interfaces, Service Interfaces, Domain Exceptions
+
+### Application Layer (`app/Application/`)
+- ❌ NEVER use Laravel/Illuminate classes
+- ❌ NEVER use Eloquent models directly
+- ✅ Use Domain interfaces (injected via constructor)
+- ✅ Use DTOs for data transfer
+- Contains: UseCases, DTOs
+
+### Infrastructure Layer (`app/Infrastructure/`)
+- ✅ Can use Laravel/Illuminate classes
+- ✅ Implements Domain interfaces
+- Contains: Eloquent Models, Repositories, Services, Providers, Logging, Mail
+
+### Http Layer (`app/Http/`)
+- ✅ Can use Laravel classes
+- ✅ Uses Domain Service interfaces (not implementations)
+- Contains: Controllers, Requests, Resources, Middleware, Rules, Exceptions, Swagger
+
+### Shared Layer (`app/Shared/`)
+- ✅ Pure PHP constants and enums (can be used by Domain)
+- ✅ Helpers (may use Laravel - only for Infrastructure/Http use)
+- Contains: Constants, Enums, Helpers
+
+## 📝 Naming Conventions
+
+### Files & Classes
+- Entities: `User.php`, `PasswordResetToken.php`
+- DTOs: `LoginDTO.php`, `CreateUserDTO.php`
+- UseCases: `LoginUseCase.php`, `CreateUserUseCase.php`
+- Interfaces: `UserRepositoryInterface.php`, `AuthServiceInterface.php`
+- Implementations: `EloquentUserRepository.php`, `LaravelMailService.php`
+- Models: `UserModel.php`, `PasswordResetTokenModel.php`
+- Mappers: `UserMapper.php`
+- Controllers: `AuthController.php`, `UserController.php`
+
+### Methods
+- UseCases: `execute()` method
+- Repositories: `findById()`, `findByField()`, `create()`, `update()`, `delete()`, `list()`
+- DTOs: `fromArray()`, `toArray()`
+- Entities: `toArray()`, business logic methods
+
+### Constants
+- Date formats: `DateFormat::DATETIME_Y_m_d_H_i_s`
+- Enums: `UserStatus::ACTIVE`, `UserRole::ADMIN`
+
+## 🔄 Data Flow
+
+```
+Request → Controller → Service → UseCase → Repository → Database
+                ↓
+           Response ← Resource ← Entity/DTO
+```
+
+## 📦 Dependency Injection
+
+Always inject interfaces, not implementations:
+
+```php
+// ✅ Good
+public function __construct(
+    protected UserRepositoryInterface $userRepository,
+    protected HashServiceInterface $hashService,
+) {}
+
+// ❌ Bad
+public function __construct(
+    protected EloquentUserRepository $userRepository,
+) {}
+```
+
+## 🗂️ File Templates
+
+### Entity (Domain)
+```php
+<?php
+
+namespace App\Domain\Entities;
+
+use App\Shared\Constants\DateFormat;
+use DateTimeImmutable;
+
+readonly class EntityName
+{
+    public function __construct(
+        public ?int $id,
+        // properties...
+    ) {}
+
+    public function toArray(): array
+    {
+        return [
+            'id' => $this->id,
+            // ...
+        ];
+    }
+}
+```
+
+### UseCase (Application)
+```php
+<?php
+
+namespace App\Application\UseCases\Feature;
+
+use App\Domain\Repositories\SomeRepositoryInterface;
+
+class DoSomethingUseCase
+{
+    public function __construct(
+        protected SomeRepositoryInterface $repository,
+    ) {}
+
+    public function execute(SomeDTO $dto): mixed
+    {
+        // Business logic here
+    }
+}
+```
+
+### DTO (Application)
+```php
+<?php
+
+namespace App\Application\DTOs\Feature;
+
+readonly class SomeDTO
+{
+    public function __construct(
+        public string $field1,
+        public string $field2,
+    ) {}
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            field1: $data['field1'],
+            field2: $data['field2'],
+        );
+    }
+
+    public function toArray(): array
+    {
+        return [
+            'field1' => $this->field1,
+            'field2' => $this->field2,
+        ];
+    }
+}
+```
+
+### Repository Interface (Domain)
+```php
+<?php
+
+namespace App\Domain\Repositories;
+
+use App\Domain\Entities\EntityName;
+
+interface EntityRepositoryInterface
+{
+    public function findById(int $id): ?EntityName;
+    public function create(array $data): EntityName;
+    public function update(array $data, int $id): EntityName;
+    public function delete(int $id): bool;
+}
+```
+
+### Repository Implementation (Infrastructure)
+```php
+<?php
+
+namespace App\Infrastructure\Repositories;
+
+use App\Domain\Entities\EntityName;
+use App\Domain\Repositories\EntityRepositoryInterface;
+use App\Infrastructure\Persistence\Eloquent\Mappers\EntityMapper;
+use App\Infrastructure\Persistence\Eloquent\Models\EntityModel;
+
+class EloquentEntityRepository implements EntityRepositoryInterface
+{
+    public function __construct(
+        protected EntityModel $model,
+    ) {}
+
+    public function findById(int $id): ?EntityName
+    {
+        $model = $this->model->query()->find($id);
+        return $model ? EntityMapper::toEntity($model) : null;
+    }
+}
+```
+
+## ⚙️ Configuration
+
+- Date formats: Use `App\Shared\Constants\DateFormat::*`
+- App config: Use `ConfigServiceInterface` in Application layer
+- Direct config: Only in Infrastructure/Http layers
+
+## 🧪 Testing Structure
+
+```
+tests/
+├── Unit/
+│   ├── Domain/Entities/
+│   ├── Domain/ValueObjects/
+│   ├── Application/DTOs/
+│   └── Application/UseCases/
+└── Feature/
+    └── Http/Controllers/Api/V1/
+```
+
+## 🚫 Anti-Patterns to Avoid
+
+1. ❌ Using Eloquent in Domain/Application layers
+2. ❌ Using `config()` in Domain/Application layers
+3. ❌ Injecting concrete classes instead of interfaces
+4. ❌ Business logic in Controllers
+5. ❌ Hardcoded values (use Constants/Config)
+6. ❌ Direct database queries in UseCases
+
+## ✅ Best Practices
+
+1. ✅ Keep Domain layer pure PHP
+2. ✅ Use Mappers to convert Model ↔ Entity
+3. ✅ One UseCase = One business action
+4. ✅ DTOs are immutable (readonly)
+5. ✅ Entities contain business logic methods
+6. ✅ Register bindings in CleanArchitectureServiceProvider

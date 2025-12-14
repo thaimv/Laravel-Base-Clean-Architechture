@@ -1,0 +1,67 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    branches: [main]
+    types:
+      - completed
+
+jobs:
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    # Only deploy if CI Pipeline succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    container:
+      image: php:8.4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update && apt-get install -y libzip-dev libpng-dev zip wget rsync openssh-client
+          docker-php-ext-install zip gd bcmath pdo_mysql
+          wget -O /usr/local/bin/composer https://getcomposer.org/download/latest-stable/composer.phar
+          chmod +x /usr/local/bin/composer
+          composer install && composer dump-autoload
+
+      - name: Debug Variables
+        run: |
+          echo "DEPLOY_USER=${{ vars.DEPLOY_USER }}"
+          echo "DEPLOY_HOST=${{ vars.DEPLOY_HOST }}"
+          echo "DEPLOY_DIR=${{ vars.DEPLOY_DIR }}"
+
+      - name: Setup SSH
+        run: |
+          mkdir -p /root/.ssh
+          echo "${{ vars.DEPLOY_SSH_KEY }}" > /root/.ssh/id_rsa
+          chmod 600 /root/.ssh/id_rsa
+          touch /root/.ssh/known_hosts
+          ssh-keyscan -H ${{ vars.DEPLOY_HOST }} >> /root/.ssh/known_hosts
+          cat >> /root/.ssh/config <<EOL
+            Host *
+            StrictHostKeyChecking no
+            ControlMaster auto
+            ControlPath /tmp/ansible-%r@%h:%p
+            ControlPersist 15m
+            PreferredAuthentications publickey
+          EOL
+          chmod 600 /root/.ssh/config
+
+      - name: Set up environment
+        run: |
+          echo '${{ vars.DEPLOY_ENV_FILE }}' > .env
+          echo "OK" > public/health.html
+
+      - name: Verify HOME directory
+        run: |
+          echo "HOME directory: $HOME"
+          ls -la $HOME
+
+      - name: Deploy using rsync and migrate
+        run: |
+          rsync -azPq --exclude='.git' --exclude='node_modules' ./ ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_DIR }}/
+          ssh ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }} "source ~/.bashrc && cd ${{ vars.DEPLOY_DIR }}"
+#          ssh ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }} "source ~/.bashrc && cd ${{ vars.DEPLOY_DIR }} && php artisan migrate && eb deploy ${{ secrets.DEV_EB_ENV_NAME }} -l ${{ github.ref_name }}-${{ github.sha }} --timeout 30"

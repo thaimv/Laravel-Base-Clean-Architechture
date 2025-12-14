@@ -1,0 +1,19 @@
+branch-defaults:
+  default:
+    environment: api-env
+environment-defaults:
+  api-env:
+    branch: null
+    repository: null
+global:
+  application_name: api-application
+  default_ec2_keyname: dev-api
+  default_platform: PHP 8.4 running on 64bit Amazon Linux 2023
+  default_region: ap-northeast-1
+  include_git_submodules: true
+  instance_profile: null
+  platform_name: null
+  platform_version: null
+  profile: null
+  sc: null
+  workspace_type: Application

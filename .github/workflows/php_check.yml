@@ -1,0 +1,117 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  phpcs:
+    name: Check PHP Code Style
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+
+      - name: Install PHP CodeSniffer
+        run: |
+          composer global require "squizlabs/php_codesniffer=*"
+
+      - name: Run PHP CodeSniffer
+        run: |
+          OUTPUT=$(~/.composer/vendor/bin/phpcs --standard=PSR2 app/ || true)
+          if [ ! -z "$OUTPUT" ]; then
+            echo "PHP CS lỗi:"
+            echo "$OUTPUT"
+            COMMENT=$(jq -n --arg body "$OUTPUT" '{body: $body}')
+            curl --request POST \
+              --url https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
+              --header "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              --header "Content-Type: application/json" \
+              --data "$COMMENT"
+            exit 1
+          fi
+
+  check-hash-key:
+    name: Check Hash Key
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Check Hash Key in Files
+        run: |
+          HASH_KEY=$(cat .hashkey)
+          MISSING_FILES=$(find ./app/ -type f \( -name "*.blade.php" -o -name "*.php" \) -not -exec grep -q "$HASH_KEY" {} \; -print)
+
+          if [ ! -z "$MISSING_FILES" ]; then
+            OUTPUT="🚨 Hash key không tìm thấy trong các file:\n$MISSING_FILES"
+            echo "$OUTPUT"
+            COMMENT=$(jq -n --arg body "$OUTPUT" '{body: $body}')
+            curl --request POST \
+              --url https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
+              --header "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              --header "Content-Type: application/json" \
+              --data "$COMMENT"
+            exit 1
+          fi
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: testing
+          MYSQL_ROOT_PASSWORD: secret
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, pdo_mysql, zip, gd, bcmath
+
+      - name: Install Composer Dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Setup Environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan jwt:secret --force
+
+      - name: Run Migrations
+        env:
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: testing
+          DB_USERNAME: root
+          DB_PASSWORD: secret
+        run: php artisan migrate --force
+
+      - name: Run Tests
+        env:
+          DB_HOST: 127.0.0.1
+          DB_DATABASE: testing
+          DB_USERNAME: root
+          DB_PASSWORD: secret
+        run: php artisan test
